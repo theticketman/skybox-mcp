@@ -1,0 +1,25 @@
+# Secrets - NEVER commit
+.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# OS junk
+.DS_Store
+
+# One-time setup / debug scripts (local use only)
+strip_keys.py
+check_error.py
+test_import.py
+verify.py
