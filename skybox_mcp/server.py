@@ -1,4 +1,4 @@
-"""
+﻿"""
 Skybox (Vivid Seats) MCP Server
 Wraps the Skybox REST API as MCP tools for use with Claude Code / Cowork.
 
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 mcp = FastMCP("skybox")
-BASE_URL = "https://skybox.vividseats.com/services"
+BASE_URL = os.environ.get("SKYBOX_BASE_URL", "https://skybox.vividseats.com/services").strip()
 
 # Chunking config
 DATE_CHUNK_DAYS   = 30    # split date ranges wider than this into windows
@@ -187,8 +187,8 @@ async def _get_chunked(
         data = await _get_all_pages(path, chunk_params)
         all_rows.extend(data.get("rows", []))
         total_rows += data.get("rowCount", 0)
-        # Merge numeric totals
-        for k, v in data.get("totals", {}).items():
+        # Merge numeric totals (API may return null for totals)
+        for k, v in (data.get("totals") or {}).items():
             if isinstance(v, (int, float)):
                 merged_totals[k] = merged_totals.get(k, 0) + v
             else:
