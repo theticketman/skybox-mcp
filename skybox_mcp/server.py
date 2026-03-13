@@ -357,7 +357,7 @@ async def get_purchased_inventory_report(
     if purchase_date_to:   params["purchaseDateTo"]   = purchase_date_to
     if event_date_from:    params["eventDateFrom"]    = event_date_from
     if event_date_to:      params["eventDateTo"]      = event_date_to
-    return await _get("/reports/purchases", params)
+    return await _get("/reports/purchasedInventory", params)
 
 
 
