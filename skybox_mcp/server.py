@@ -359,6 +359,7 @@ async def get_purchased_inventory_report(
     if event_date_to:      params["eventDateTo"]      = event_date_to
     return await _get("/reports/purchases", params)
 
+
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -366,38 +367,7 @@ if __name__ == "__main__":
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
     if transport == "sse":
         import uvicorn
-        from mcp.server.sse import SseServerTransport
-        from starlette.applications import Starlette
-        from starlette.routing import Route, Mount
-
-        sse_transport = SseServerTransport("/messages/")
-
-        async def handle_sse(request):
-            async with sse_transport.connect_sse(
-                request.scope, request.receive, request._send
-            ) as streams:
-                await mcp._mcp_server.run(
-                    streams[0], streams[1],
-                    mcp._mcp_server.create_initialization_options()
-                )
-
-        from starlette.middleware.cors import CORSMiddleware
-
-        starlette_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=handle_sse),
-                Mount("/messages/", app=sse_transport.handle_post_message),
-            ]
-        )
-
-        starlette_app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
         port = int(os.environ.get("PORT", 8000))
-        uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+        uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
     else:
         mcp.run(transport="stdio")
