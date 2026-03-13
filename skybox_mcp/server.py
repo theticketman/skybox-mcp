@@ -1,4 +1,4 @@
-﻿"""
+"""
 Skybox (Vivid Seats) MCP Server
 Wraps the Skybox REST API as MCP tools for use with Claude Code / Cowork.
 
@@ -11,6 +11,7 @@ Override by setting:
 
 import os
 from typing import Optional
+from datetime import date, timedelta, datetime
 import httpx
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
@@ -19,6 +20,12 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 mcp = FastMCP("skybox")
 BASE_URL = "https://skybox.vividseats.com/services"
+
+# Chunking config
+DATE_CHUNK_DAYS   = 30    # split date ranges wider than this into windows
+MAX_ROWS_PER_CALL = 100   # page size for paginated fetches
+MAX_TOTAL_ROWS    = 5000  # safety cap - stop fetching after this many rows
+
 
 def _headers() -> dict:
     app_token = os.environ.get("SKYBOX_APPLICATION_TOKEN")
@@ -77,7 +84,131 @@ async def _delete(path: str) -> dict:
             return {"status": "deleted", "statusCode": r.status_code}
 
 
-# â”€â”€ INVENTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
+# Chunking helpers
+# ---------------------------------------------------------------------------
+
+def _parse_date(s: str) -> date:
+    """Parse YYYY-MM-DD string to date object."""
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+def _date_chunks(from_str: str, to_str: str, chunk_days: int = DATE_CHUNK_DAYS):
+    """
+    Yield (chunk_from, chunk_to) string pairs splitting a date range into
+    windows of at most chunk_days days. Returns a single window if the range
+    is already within the limit.
+    """
+    start = _parse_date(from_str)
+    end   = _parse_date(to_str)
+    if (end - start).days <= chunk_days:
+        yield from_str, to_str
+        return
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=chunk_days - 1), end)
+        yield cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")
+        cursor = chunk_end + timedelta(days=1)
+
+async def _get_all_pages(path: str, params: dict) -> dict:
+    """
+    Auto-paginate a Skybox endpoint that returns {rows, rowCount, totals}.
+    Fetches pages sequentially until all rows are retrieved or MAX_TOTAL_ROWS
+    is reached. Returns a merged result with all rows and the original totals.
+    """
+    page_params = {**params, "pageSize": MAX_ROWS_PER_CALL, "pageNumber": 0}
+    first = await _get(path, page_params)
+
+    all_rows  = list(first.get("rows", []))
+    row_count = first.get("rowCount", len(all_rows))
+    totals    = first.get("totals", {})
+    extra     = {k: v for k, v in first.items() if k not in ("rows", "rowCount", "totals")}
+
+    page = 1
+    while len(all_rows) < row_count and len(all_rows) < MAX_TOTAL_ROWS:
+        page_params = {**params, "pageSize": MAX_ROWS_PER_CALL, "pageNumber": page}
+        data = await _get(path, page_params)
+        batch = data.get("rows", [])
+        if not batch:
+            break
+        all_rows.extend(batch)
+        page += 1
+
+    truncated = len(all_rows) >= MAX_TOTAL_ROWS and len(all_rows) < row_count
+    result = {**extra, "rows": all_rows, "rowCount": row_count, "totals": totals,
+              "fetchedRows": len(all_rows)}
+    if truncated:
+        result["_warning"] = (
+            f"Result truncated at {MAX_TOTAL_ROWS} rows (total available: {row_count}). "
+            "Narrow your date range or add more filters to get all records."
+        )
+    return result
+
+async def _get_chunked(
+    path: str,
+    params: dict,
+    from_key: str,
+    to_key: str,
+    from_val: Optional[str],
+    to_val: Optional[str],
+) -> dict:
+    """
+    Fetch a date-filtered endpoint with automatic date-range chunking +
+    full pagination within each chunk. Merges all rows across chunks.
+
+    If no date range is provided, falls back to a single paginated fetch.
+    """
+    # No date range - just paginate
+    if not from_val and not to_val:
+        return await _get_all_pages(path, params)
+
+    # Single date with no end - use same date for both
+    if from_val and not to_val:
+        to_val = from_val
+
+    # Check if chunking is needed
+    if from_val and to_val:
+        span = (_parse_date(to_val) - _parse_date(from_val)).days
+    else:
+        span = 0
+
+    if span <= DATE_CHUNK_DAYS:
+        return await _get_all_pages(path, params)
+
+    # Chunk the date range and merge results
+    all_rows   = []
+    total_rows = 0
+    merged_totals = {}
+    first_extra = {}
+
+    for chunk_from, chunk_to in _date_chunks(from_val, to_val):
+        if len(all_rows) >= MAX_TOTAL_ROWS:
+            break
+        chunk_params = {**params, from_key: chunk_from, to_key: chunk_to}
+        data = await _get_all_pages(path, chunk_params)
+        all_rows.extend(data.get("rows", []))
+        total_rows += data.get("rowCount", 0)
+        # Merge numeric totals
+        for k, v in data.get("totals", {}).items():
+            if isinstance(v, (int, float)):
+                merged_totals[k] = merged_totals.get(k, 0) + v
+            else:
+                merged_totals[k] = v
+        if not first_extra:
+            first_extra = {k: v for k, v in data.items()
+                           if k not in ("rows", "rowCount", "totals", "fetchedRows", "_warning")}
+
+    truncated = len(all_rows) >= MAX_TOTAL_ROWS and len(all_rows) < total_rows
+    result = {**first_extra, "rows": all_rows, "rowCount": total_rows,
+              "totals": merged_totals, "fetchedRows": len(all_rows)}
+    if truncated:
+        result["_warning"] = (
+            f"Result truncated at {MAX_TOTAL_ROWS} rows (total available: {total_rows}). "
+            "Narrow your date range or add more filters to get all records."
+        )
+    return result
+
+
+# ── INVENTORY ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 async def get_inventory(
@@ -97,16 +228,16 @@ async def get_inventory(
         section:     Filter by section
         status:      AVAILABLE, SOLD, PENDING
         broadcast:   True = broadcast only; False = unbroadcast only
-        page_number: Zero-based page number
-        page_size:   Results per page (max 100)
+        page_number: Zero-based page number (ignored when auto-paginating)
+        page_size:   Results per page (max 100; auto-pagination fetches all)
     """
     params = {"pageNumber": page_number, "pageSize": page_size}
-    if keywords:  params["keywords"]  = keywords
-    if event_id:  params["eventId"]   = event_id
-    if section:   params["section"]   = section
-    if status:    params["status"]    = status
+    if keywords:          params["keywords"]  = keywords
+    if event_id:          params["eventId"]   = event_id
+    if section:           params["section"]   = section
+    if status:            params["status"]    = status
     if broadcast is not None: params["broadcast"] = str(broadcast).lower()
-    return await _get("/inventory", params)
+    return await _get_all_pages("/inventory", params)
 
 @mcp.tool()
 async def get_inventory_by_id(inventory_id: int) -> dict:
@@ -122,7 +253,6 @@ async def update_inventory_price(inventory_id: int, unit_price: float) -> dict:
         unit_price:   New price per ticket (USD)
     """
     return await _put(f"/inventory/{inventory_id}", {"unitPrice": unit_price})
-
 
 @mcp.tool()
 async def update_inventory(
@@ -163,7 +293,8 @@ async def update_inventory(
     if shown_quantity    is not None: body["shownQuantity"]   = shown_quantity
     return await _put(f"/inventory/{inventory_id}", body)
 
-# â”€â”€ INVOICES (Sell Side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# ── INVOICES (Sell Side) ──────────────────────────────────────────────────────
 
 @mcp.tool()
 async def get_invoices(
@@ -174,12 +305,11 @@ async def get_invoices(
     created_date_to: Optional[str] = None,
     event_date_from: Optional[str] = None,
     event_date_to: Optional[str] = None,
-    page_number: int = 0,
-    page_size: int = 50,
 ) -> dict:
     """
-    List sales invoices. At least one filter is required by the Skybox API.
-    For aggregate revenue totals by date, use get_quick_report_sales instead.
+    List sales invoices. At least one filter required by the Skybox API.
+    Auto-paginates all results. Date ranges >30 days are chunked automatically.
+    For aggregate revenue totals, use get_quick_report_sales instead.
     Args:
         event_id:           Skybox event ID
         fulfillment_status: FULFILLED or UNFULFILLED
@@ -189,7 +319,7 @@ async def get_invoices(
         event_date_from:    Event date range start (YYYY-MM-DD)
         event_date_to:      Event date range end (YYYY-MM-DD)
     """
-    params = {"pageNumber": page_number, "pageSize": page_size}
+    params = {}
     if event_id:           params["eventId"]           = event_id
     if fulfillment_status: params["fulfillmentStatus"] = fulfillment_status
     if payment_status:     params["paymentStatus"]     = payment_status
@@ -197,7 +327,14 @@ async def get_invoices(
     if created_date_to:    params["createdDateTo"]     = created_date_to
     if event_date_from:    params["eventDateFrom"]     = event_date_from
     if event_date_to:      params["eventDateTo"]       = event_date_to
-    return await _get("/invoices", params)
+    # Prefer chunking on createdDate; fall back to eventDate
+    if created_date_from or created_date_to:
+        return await _get_chunked("/invoices", params,
+                                  "createdDateFrom", "createdDateTo",
+                                  created_date_from, created_date_to)
+    return await _get_chunked("/invoices", params,
+                              "eventDateFrom", "eventDateTo",
+                              event_date_from, event_date_to)
 
 @mcp.tool()
 async def get_invoice_by_id(invoice_id: int) -> dict:
@@ -220,7 +357,8 @@ async def update_invoice(
     if tags:               body["tags"]              = tags
     return await _put(f"/invoices/{invoice_id}", body)
 
-# â”€â”€ PURCHASES (Buy Side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# ── PURCHASES (Buy Side) ──────────────────────────────────────────────────────
 
 @mcp.tool()
 async def get_purchases(
@@ -230,12 +368,11 @@ async def get_purchases(
     created_date_from: Optional[str] = None,
     created_date_to: Optional[str] = None,
     event_name: Optional[str] = None,
-    page_number: int = 0,
-    page_size: int = 50,
 ) -> dict:
     """
-    List purchase orders. At least one filter is required by the Skybox API.
-    For aggregate purchase totals by date, use get_quick_report_purchases instead.
+    List purchase orders. At least one filter required by the Skybox API.
+    Auto-paginates all results. Date ranges >30 days are chunked automatically.
+    For aggregate purchase totals, use get_quick_report_purchases instead.
     Args:
         event_id:          Skybox event ID
         payment_status:    PAID or UNPAID
@@ -244,21 +381,24 @@ async def get_purchases(
         created_date_to:   Purchase created date end (YYYY-MM-DD)
         event_name:        Filter by event name (partial match)
     """
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if event_id:          params["eventId"]        = event_id
-    if payment_status:    params["paymentStatus"]  = payment_status
-    if vendor_id:         params["vendorId"]       = vendor_id
+    params = {}
+    if event_id:          params["eventId"]         = event_id
+    if payment_status:    params["paymentStatus"]   = payment_status
+    if vendor_id:         params["vendorId"]        = vendor_id
     if created_date_from: params["createdDateFrom"] = created_date_from
-    if created_date_to:   params["createdDateTo"]  = created_date_to
-    if event_name:        params["eventName"]      = event_name
-    return await _get("/purchases", params)
+    if created_date_to:   params["createdDateTo"]   = created_date_to
+    if event_name:        params["eventName"]       = event_name
+    return await _get_chunked("/purchases", params,
+                              "createdDateFrom", "createdDateTo",
+                              created_date_from, created_date_to)
+
 @mcp.tool()
 async def get_purchase_by_id(purchase_id: int) -> dict:
     """Get full details for a single purchase order by its Skybox ID."""
     return await _get(f"/purchases/{purchase_id}")
 
 
-# â”€â”€ EVENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── EVENTS ────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 async def get_events(
@@ -293,70 +433,7 @@ async def get_event_by_id(event_id: int) -> dict:
     """Get full details for a single event by its Skybox event ID."""
     return await _get(f"/events/{event_id}")
 
-# â”€â”€ VENDORS / CUSTOMERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-async def get_vendors(keywords: Optional[str] = None, page_number: int = 0, page_size: int = 50) -> dict:
-    """List vendors (ticket suppliers / box offices) in Skybox."""
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if keywords: params["keywords"] = keywords
-    return await _get("/vendors", params)
-
-@mcp.tool()
-async def get_customers(keywords: Optional[str] = None, page_number: int = 0, page_size: int = 50) -> dict:
-    """List customers (buyers) in Skybox."""
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if keywords: params["keywords"] = keywords
-    return await _get("/customers", params)
-
-
-# â”€â”€ HOLDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-async def get_holds(page_number: int = 0, page_size: int = 50) -> dict:
-    """List active holds on inventory in Skybox."""
-    return await _get("/holds", {"pageNumber": page_number, "pageSize": page_size})
-
-@mcp.tool()
-async def get_hold_by_id(hold_id: int) -> dict:
-    """Get details for a specific hold by ID."""
-    return await _get(f"/holds/{hold_id}")
-
-# â”€â”€ TAGS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-async def get_tags() -> dict:
-    """List all tags configured in the Skybox account."""
-    return await _get("/tags")
-
-# â”€â”€ WEBHOOKS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-@mcp.tool()
-async def get_webhooks() -> dict:
-    """List all webhook subscriptions configured on this Skybox account."""
-    return await _get("/webhooks")
-
-@mcp.tool()
-async def create_webhook(topic: str, url: str, headers: Optional[str] = None, secret: Optional[str] = None) -> dict:
-    """
-    Create a webhook subscription for real-time Skybox notifications.
-    Args:
-        topic:   INVENTORY, PURCHASE, INVOICE, LINE, or HOLD
-        url:     HTTPS endpoint to receive POST notifications
-        headers: Optional auth headers string
-        secret:  Optional HMAC secret for payload signature
-    """
-    body: dict = {"topic": topic, "url": url}
-    if headers: body["headers"] = headers
-    if secret:  body["secret"]  = secret
-    return await _post("/webhooks", body)
-
-@mcp.tool()
-async def delete_webhook(webhook_id: int) -> dict:
-    """Delete a webhook subscription by ID."""
-    return await _delete(f"/webhooks/{webhook_id}")
-
-# -- REPORTS (note: /reports/* endpoints are not available via Skybox public API) -----
+# ── SOLD / PURCHASED INVENTORY ────────────────────────────────────────────────
 
 @mcp.tool()
 async def get_sold_inventory(
@@ -367,11 +444,10 @@ async def get_sold_inventory(
     invoice_date_to: Optional[str] = None,
     event_date_from: Optional[str] = None,
     event_date_to: Optional[str] = None,
-    page_number: int = 0,
-    page_size: int = 50,
 ) -> dict:
     """
     List sold inventory with line-item detail. At least one filter required.
+    Auto-paginates all results. Date ranges >30 days are chunked automatically.
     For summary totals, use get_quick_report_sales instead.
     Args:
         keywords:          Free-text search
@@ -382,15 +458,22 @@ async def get_sold_inventory(
         event_date_from:   Event date range start (YYYY-MM-DD)
         event_date_to:     Event date range end (YYYY-MM-DD)
     """
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if keywords:          params["eventKeywords"]    = keywords
-    if event_id:          params["eventId"]          = event_id
-    if section:           params["section"]          = section
-    if invoice_date_from: params["invoiceDateFrom"]  = invoice_date_from
-    if invoice_date_to:   params["invoiceDateTo"]    = invoice_date_to
-    if event_date_from:   params["eventDateFrom"]    = event_date_from
-    if event_date_to:     params["eventDateTo"]      = event_date_to
-    return await _get("/inventory/sold", params)
+    params = {}
+    if keywords:          params["eventKeywords"]   = keywords
+    if event_id:          params["eventId"]         = event_id
+    if section:           params["section"]         = section
+    if invoice_date_from: params["invoiceDateFrom"] = invoice_date_from
+    if invoice_date_to:   params["invoiceDateTo"]   = invoice_date_to
+    if event_date_from:   params["eventDateFrom"]   = event_date_from
+    if event_date_to:     params["eventDateTo"]     = event_date_to
+    if invoice_date_from or invoice_date_to:
+        return await _get_chunked("/inventory/sold", params,
+                                  "invoiceDateFrom", "invoiceDateTo",
+                                  invoice_date_from, invoice_date_to)
+    return await _get_chunked("/inventory/sold", params,
+                              "eventDateFrom", "eventDateTo",
+                              event_date_from, event_date_to)
+
 
 @mcp.tool()
 async def get_purchased_inventory(
@@ -402,11 +485,10 @@ async def get_purchased_inventory(
     event_date_from: Optional[str] = None,
     event_date_to: Optional[str] = None,
     payment_status: Optional[str] = None,
-    page_number: int = 0,
-    page_size: int = 50,
 ) -> dict:
     """
     List purchased inventory with line-item detail. At least one filter required.
+    Auto-paginates all results. Date ranges >30 days are chunked automatically.
     For summary totals, use get_quick_report_purchases instead.
     Args:
         keywords:           Free-text search (event name)
@@ -418,16 +500,25 @@ async def get_purchased_inventory(
         event_date_to:      Event date range end (YYYY-MM-DD)
         payment_status:     PAID or UNPAID
     """
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if keywords:            params["event"]             = keywords
-    if event_id:            params["eventId"]           = event_id
-    if vendor_id:           params["vendorId"]          = vendor_id
-    if purchase_date_from:  params["purchaseDateFrom"]  = purchase_date_from
-    if purchase_date_to:    params["purchaseDateTo"]    = purchase_date_to
-    if event_date_from:     params["eventDateFrom"]     = event_date_from
-    if event_date_to:       params["eventDateTo"]       = event_date_to
-    if payment_status:      params["paymentStatus"]     = payment_status
-    return await _get("/inventory/purchased", params)
+    params = {}
+    if keywords:           params["event"]            = keywords
+    if event_id:           params["eventId"]          = event_id
+    if vendor_id:          params["vendorId"]         = vendor_id
+    if purchase_date_from: params["purchaseDateFrom"] = purchase_date_from
+    if purchase_date_to:   params["purchaseDateTo"]   = purchase_date_to
+    if event_date_from:    params["eventDateFrom"]    = event_date_from
+    if event_date_to:      params["eventDateTo"]      = event_date_to
+    if payment_status:     params["paymentStatus"]    = payment_status
+    if purchase_date_from or purchase_date_to:
+        return await _get_chunked("/inventory/purchased", params,
+                                  "purchaseDateFrom", "purchaseDateTo",
+                                  purchase_date_from, purchase_date_to)
+    return await _get_chunked("/inventory/purchased", params,
+                              "eventDateFrom", "eventDateTo",
+                              event_date_from, event_date_to)
+
+
+# ── QUICK REPORTS ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
 async def get_quick_report_sales(
@@ -443,9 +534,10 @@ async def get_quick_report_sales(
     """
     Get aggregate sales revenue summary for a date range. Returns totals for:
     quantity, invoices, ticketCost, ticketSales, profit, profitPercentage, roi.
-    This is the best tool for 'how much revenue did I make today/this week'.
+    Best tool for 'how much revenue did I make today/this week/this month'.
+    Note: returns a single aggregate object, not row-level data.
     Args:
-        invoice_date_from:  Sale date range start (YYYY-MM-DD) - use for 'sales today'
+        invoice_date_from:  Sale date range start (YYYY-MM-DD)
         invoice_date_to:    Sale date range end (YYYY-MM-DD)
         event_date_from:    Event date range start (YYYY-MM-DD)
         event_date_to:      Event date range end (YYYY-MM-DD)
@@ -478,7 +570,8 @@ async def get_quick_report_purchases(
     """
     Get aggregate purchase cost summary for a date range. Returns totals for:
     purchases, quantity, ticketCost, outstandingBalance, availableQuantity, soldQuantity.
-    This is the best tool for 'how much did I spend buying tickets this week'.
+    Best tool for 'how much did I spend buying tickets this week/month'.
+    Note: returns a single aggregate object, not row-level data.
     Args:
         purchase_date_from: Purchase date range start (YYYY-MM-DD)
         purchase_date_to:   Purchase date range end (YYYY-MM-DD)
@@ -499,7 +592,64 @@ async def get_quick_report_purchases(
     return await _get("/quick-report/purchases", params)
 
 
-# -- ENTRYPOINT --------------------------------------------------------------
+# ── VENDORS / CUSTOMERS / HOLDS / TAGS / WEBHOOKS ────────────────────────────
+
+@mcp.tool()
+async def get_vendors(keywords: Optional[str] = None, page_number: int = 0, page_size: int = 50) -> dict:
+    """List vendors (ticket suppliers / box offices) in Skybox."""
+    params = {"pageNumber": page_number, "pageSize": page_size}
+    if keywords: params["keywords"] = keywords
+    return await _get("/vendors", params)
+
+@mcp.tool()
+async def get_customers(keywords: Optional[str] = None, page_number: int = 0, page_size: int = 50) -> dict:
+    """List customers (buyers) in Skybox."""
+    params = {"pageNumber": page_number, "pageSize": page_size}
+    if keywords: params["keywords"] = keywords
+    return await _get("/customers", params)
+
+@mcp.tool()
+async def get_holds(page_number: int = 0, page_size: int = 50) -> dict:
+    """List active holds on inventory in Skybox."""
+    return await _get("/holds", {"pageNumber": page_number, "pageSize": page_size})
+
+@mcp.tool()
+async def get_hold_by_id(hold_id: int) -> dict:
+    """Get details for a specific hold by ID."""
+    return await _get(f"/holds/{hold_id}")
+
+@mcp.tool()
+async def get_tags() -> dict:
+    """List all tags configured in the Skybox account."""
+    return await _get("/tags")
+
+@mcp.tool()
+async def get_webhooks() -> dict:
+    """List all webhook subscriptions configured on this Skybox account."""
+    return await _get("/webhooks")
+
+@mcp.tool()
+async def create_webhook(topic: str, url: str, headers: Optional[str] = None, secret: Optional[str] = None) -> dict:
+    """
+    Create a webhook subscription for real-time Skybox notifications.
+    Args:
+        topic:   INVENTORY, PURCHASE, INVOICE, LINE, or HOLD
+        url:     HTTPS endpoint to receive POST notifications
+        headers: Optional auth headers string
+        secret:  Optional HMAC secret for payload signature
+    """
+    body: dict = {"topic": topic, "url": url}
+    if headers: body["headers"] = headers
+    if secret:  body["secret"]  = secret
+    return await _post("/webhooks", body)
+
+@mcp.tool()
+async def delete_webhook(webhook_id: int) -> dict:
+    """Delete a webhook subscription by ID."""
+    return await _delete(f"/webhooks/{webhook_id}")
+
+
+# ── ENTRYPOINT ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
@@ -515,7 +665,6 @@ if __name__ == "__main__":
         CLIENT_ID     = os.environ.get("OAUTH_CLIENT_ID", "")
         CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
 
-        # In-memory stores
         auth_codes    = {}
         access_tokens = {}
 
@@ -566,10 +715,7 @@ if __name__ == "__main__":
             if not entry or time.time() > entry["expires"]:
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
             token = secrets.token_urlsafe(32)
-            access_tokens[token] = {
-                "client_id": client_id,
-                "expires": time.time() + 86400,
-            }
+            access_tokens[token] = {"client_id": client_id, "expires": time.time() + 86400}
             return JSONResponse({
                 "access_token": token,
                 "token_type": "Bearer",
@@ -578,10 +724,6 @@ if __name__ == "__main__":
 
         class BearerAuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
-                # OAuth handshake validates client at token issuance.
-                # In-memory tokens don't survive Cloud Run cold starts,
-                # so we pass all requests through — security is at the
-                # OAuth layer, not per-request Bearer validation.
                 return await call_next(request)
 
         sse_transport = SseServerTransport("/messages/")
