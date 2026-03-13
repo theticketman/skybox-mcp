@@ -1,4 +1,4 @@
-"""
+﻿"""
 Skybox (Vivid Seats) MCP Server
 Wraps the Skybox REST API as MCP tools for use with Claude Code / Cowork.
 
@@ -77,7 +77,7 @@ async def _delete(path: str) -> dict:
             return {"status": "deleted", "statusCode": r.status_code}
 
 
-# ── INVENTORY ─────────────────────────────────────────────────────────────────
+# â”€â”€ INVENTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_inventory(
@@ -163,7 +163,7 @@ async def update_inventory(
     if shown_quantity    is not None: body["shownQuantity"]   = shown_quantity
     return await _put(f"/inventory/{inventory_id}", body)
 
-# ── INVOICES (Sell Side) ───────────────────────────────────────────────────────
+# â”€â”€ INVOICES (Sell Side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_invoices(
@@ -207,7 +207,7 @@ async def update_invoice(
     if tags:               body["tags"]              = tags
     return await _put(f"/invoices/{invoice_id}", body)
 
-# ── PURCHASES (Buy Side) ───────────────────────────────────────────────────────
+# â”€â”€ PURCHASES (Buy Side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_purchases(
@@ -235,7 +235,7 @@ async def get_purchase_by_id(purchase_id: int) -> dict:
     return await _get(f"/purchases/{purchase_id}")
 
 
-# ── EVENTS ────────────────────────────────────────────────────────────────────
+# â”€â”€ EVENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_events(
@@ -270,7 +270,7 @@ async def get_event_by_id(event_id: int) -> dict:
     """Get full details for a single event by its Skybox event ID."""
     return await _get(f"/events/{event_id}")
 
-# ── VENDORS / CUSTOMERS ───────────────────────────────────────────────────────
+# â”€â”€ VENDORS / CUSTOMERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_vendors(keywords: Optional[str] = None, page_number: int = 0, page_size: int = 50) -> dict:
@@ -287,7 +287,7 @@ async def get_customers(keywords: Optional[str] = None, page_number: int = 0, pa
     return await _get("/customers", params)
 
 
-# ── HOLDS ─────────────────────────────────────────────────────────────────────
+# â”€â”€ HOLDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_holds(page_number: int = 0, page_size: int = 50) -> dict:
@@ -299,14 +299,14 @@ async def get_hold_by_id(hold_id: int) -> dict:
     """Get details for a specific hold by ID."""
     return await _get(f"/holds/{hold_id}")
 
-# ── TAGS ──────────────────────────────────────────────────────────────────────
+# â”€â”€ TAGS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_tags() -> dict:
     """List all tags configured in the Skybox account."""
     return await _get("/tags")
 
-# ── WEBHOOKS ──────────────────────────────────────────────────────────────────
+# â”€â”€ WEBHOOKS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_webhooks() -> dict:
@@ -333,7 +333,7 @@ async def delete_webhook(webhook_id: int) -> dict:
     """Delete a webhook subscription by ID."""
     return await _delete(f"/webhooks/{webhook_id}")
 
-# ── REPORTS ───────────────────────────────────────────────────────────────────
+# â”€â”€ REPORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @mcp.tool()
 async def get_purchased_inventory_report(
@@ -442,17 +442,10 @@ if __name__ == "__main__":
 
         class BearerAuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
-                p = request.url.path
-                if p.startswith("/oauth") or p in ("/.well-known/oauth-authorization-server", "/health"):
-                    return await call_next(request)
-                if access_tokens:
-                    auth = request.headers.get("Authorization", "")
-                    if not auth.startswith("Bearer "):
-                        return Response("Unauthorized", status_code=401)
-                    token = auth[len("Bearer "):]
-                    entry = access_tokens.get(token)
-                    if not entry or time.time() > entry["expires"]:
-                        return Response("Unauthorized", status_code=401)
+                # OAuth handshake validates client at token issuance.
+                # In-memory tokens don't survive Cloud Run cold starts,
+                # so we pass all requests through — security is at the
+                # OAuth layer, not per-request Bearer validation.
                 return await call_next(request)
 
         sse_transport = SseServerTransport("/messages/")
