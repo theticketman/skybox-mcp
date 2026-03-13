@@ -381,11 +381,20 @@ if __name__ == "__main__":
                     mcp._mcp_server.create_initialization_options()
                 )
 
+        from starlette.middleware.cors import CORSMiddleware
+
         starlette_app = Starlette(
             routes=[
                 Route("/sse", endpoint=handle_sse),
                 Mount("/messages/", app=sse_transport.handle_post_message),
             ]
+        )
+
+        starlette_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
 
         port = int(os.environ.get("PORT", 8000))
