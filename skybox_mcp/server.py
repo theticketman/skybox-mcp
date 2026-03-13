@@ -333,33 +333,31 @@ async def delete_webhook(webhook_id: int) -> dict:
     """Delete a webhook subscription by ID."""
     return await _delete(f"/webhooks/{webhook_id}")
 
-# â”€â”€ REPORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- REPORTS (note: /reports/* endpoints are not available via Skybox public API) -----
 
 @mcp.tool()
-async def get_purchased_inventory_report(
-    purchase_date_from: Optional[str] = None,
-    purchase_date_to: Optional[str] = None,
-    event_date_from: Optional[str] = None,
-    event_date_to: Optional[str] = None,
+async def get_sold_inventory(
+    keywords: Optional[str] = None,
+    event_id: Optional[int] = None,
+    section: Optional[str] = None,
     page_number: int = 0,
-    page_size: int = 100,
+    page_size: int = 50,
 ) -> dict:
     """
-    Pull the Purchased Inventory P&L report from Skybox.
+    List SOLD inventory in Skybox. Use this for revenue analysis.
+    NOTE: The Skybox /reports endpoints are not exposed via the public REST API.
+    To calculate revenue for a date range, use get_events to find relevant events,
+    then get_invoices per event_id. Or use this tool to list sold inventory.
     Args:
-        purchase_date_from: Start of purchase date range (YYYY-MM-DD)
-        purchase_date_to:   End of purchase date range (YYYY-MM-DD)
-        event_date_from:    Start of event date range (YYYY-MM-DD)
-        event_date_to:      End of event date range (YYYY-MM-DD)
+        keywords:  Free-text search (event name, performer, venue)
+        event_id:  Filter by Skybox event ID
+        section:   Filter by section
     """
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if purchase_date_from: params["purchaseDateFrom"] = purchase_date_from
-    if purchase_date_to:   params["purchaseDateTo"]   = purchase_date_to
-    if event_date_from:    params["eventDateFrom"]    = event_date_from
-    if event_date_to:      params["eventDateTo"]      = event_date_to
-    return await _get("/reports/purchasedInventory", params)
-
-
+    params = {"pageNumber": page_number, "pageSize": page_size, "status": "SOLD"}
+    if keywords:  params["keywords"] = keywords
+    if event_id:  params["eventId"]  = event_id
+    if section:   params["section"]  = section
+    return await _get("/inventory", params)
 
 
 
