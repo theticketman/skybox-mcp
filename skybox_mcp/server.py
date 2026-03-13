@@ -361,26 +361,97 @@ async def get_purchased_inventory_report(
 
 
 
-# ── ENTRYPOINT ────────────────────────────────────────────────────────────────
+
+
+# -- ENTRYPOINT --------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
     if transport == "sse":
-        import uvicorn
+        import uvicorn, time, secrets
         from starlette.applications import Starlette
         from starlette.routing import Route, Mount
-        from starlette.responses import Response
+        from starlette.responses import Response, JSONResponse, RedirectResponse
         from starlette.middleware.base import BaseHTTPMiddleware
         from mcp.server.sse import SseServerTransport
 
-        AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+        CLIENT_ID     = os.environ.get("OAUTH_CLIENT_ID", "")
+        CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
+
+        # In-memory stores
+        auth_codes    = {}
+        access_tokens = {}
+
+        async def oauth_metadata(request):
+            base = str(request.base_url).rstrip("/")
+            return JSONResponse({
+                "issuer": base,
+                "authorization_endpoint": f"{base}/oauth/authorize",
+                "token_endpoint": f"{base}/oauth/token",
+                "response_types_supported": ["code"],
+                "grant_types_supported": ["authorization_code"],
+            })
+
+        async def oauth_authorize(request):
+            params       = dict(request.query_params)
+            client_id    = params.get("client_id", "")
+            redirect_uri = params.get("redirect_uri", "")
+            state        = params.get("state", "")
+            if CLIENT_ID and client_id != CLIENT_ID:
+                return Response("Invalid client_id", status_code=403)
+            code = secrets.token_urlsafe(32)
+            auth_codes[code] = {
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "expires": time.time() + 300,
+            }
+            sep = "&" if "?" in redirect_uri else "?"
+            return RedirectResponse(
+                url=f"{redirect_uri}{sep}code={code}&state={state}",
+                status_code=302,
+            )
+
+        async def oauth_token(request):
+            try:
+                body = await request.json()
+            except Exception:
+                form = await request.form()
+                body = dict(form)
+            grant_type    = body.get("grant_type", "")
+            code          = body.get("code", "")
+            client_id     = body.get("client_id", "")
+            client_secret = body.get("client_secret", "")
+            if grant_type != "authorization_code":
+                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+            if CLIENT_SECRET and client_secret != CLIENT_SECRET:
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
+            entry = auth_codes.pop(code, None)
+            if not entry or time.time() > entry["expires"]:
+                return JSONResponse({"error": "invalid_grant"}, status_code=400)
+            token = secrets.token_urlsafe(32)
+            access_tokens[token] = {
+                "client_id": client_id,
+                "expires": time.time() + 86400,
+            }
+            return JSONResponse({
+                "access_token": token,
+                "token_type": "Bearer",
+                "expires_in": 86400,
+            })
 
         class BearerAuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
-                if AUTH_TOKEN:
+                p = request.url.path
+                if p.startswith("/oauth") or p in ("/.well-known/oauth-authorization-server", "/health"):
+                    return await call_next(request)
+                if access_tokens:
                     auth = request.headers.get("Authorization", "")
-                    if auth != f"Bearer {AUTH_TOKEN}":
+                    if not auth.startswith("Bearer "):
+                        return Response("Unauthorized", status_code=401)
+                    token = auth[len("Bearer "):]
+                    entry = access_tokens.get(token)
+                    if not entry or time.time() > entry["expires"]:
                         return Response("Unauthorized", status_code=401)
                 return await call_next(request)
 
@@ -395,15 +466,20 @@ if __name__ == "__main__":
                     mcp._mcp_server.create_initialization_options()
                 )
 
-        starlette_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=handle_sse),
-                Mount("/messages/", app=sse_transport.handle_post_message),
-            ]
-        )
-        starlette_app.add_middleware(BearerAuthMiddleware)
+        async def health(request):
+            return JSONResponse({"status": "ok"})
 
-        port = int(os.environ.get("PORT", 8000))
-        uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+        app = Starlette(routes=[
+            Route("/.well-known/oauth-authorization-server", oauth_metadata),
+            Route("/oauth/authorize", oauth_authorize),
+            Route("/oauth/token", oauth_token, methods=["POST"]),
+            Route("/health", health),
+            Route("/sse", handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ])
+        app.add_middleware(BearerAuthMiddleware)
+
+        port = int(os.environ.get("PORT", 8080))
+        uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         mcp.run(transport="stdio")
