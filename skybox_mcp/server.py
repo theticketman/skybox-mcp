@@ -167,24 +167,37 @@ async def update_inventory(
 
 @mcp.tool()
 async def get_invoices(
-    event_id: int,
+    event_id: Optional[int] = None,
     fulfillment_status: Optional[str] = None,
     payment_status: Optional[str] = None,
+    created_date_from: Optional[str] = None,
+    created_date_to: Optional[str] = None,
+    event_date_from: Optional[str] = None,
+    event_date_to: Optional[str] = None,
     page_number: int = 0,
     page_size: int = 50,
 ) -> dict:
     """
-    List sales invoices for a specific event. event_id is required.
+    List sales invoices. At least one filter is required by the Skybox API.
+    For aggregate revenue totals by date, use get_quick_report_sales instead.
     Args:
-        event_id:           Skybox event ID (required)
+        event_id:           Skybox event ID
         fulfillment_status: FULFILLED or UNFULFILLED
         payment_status:     PAID or UNPAID
+        created_date_from:  Invoice created date start (YYYY-MM-DD)
+        created_date_to:    Invoice created date end (YYYY-MM-DD)
+        event_date_from:    Event date range start (YYYY-MM-DD)
+        event_date_to:      Event date range end (YYYY-MM-DD)
     """
-    params = {"pageNumber": page_number, "pageSize": page_size, "eventId": event_id}
+    params = {"pageNumber": page_number, "pageSize": page_size}
+    if event_id:           params["eventId"]           = event_id
     if fulfillment_status: params["fulfillmentStatus"] = fulfillment_status
     if payment_status:     params["paymentStatus"]     = payment_status
+    if created_date_from:  params["createdDateFrom"]   = created_date_from
+    if created_date_to:    params["createdDateTo"]     = created_date_to
+    if event_date_from:    params["eventDateFrom"]     = event_date_from
+    if event_date_to:      params["eventDateTo"]       = event_date_to
     return await _get("/invoices", params)
-
 
 @mcp.tool()
 async def get_invoice_by_id(invoice_id: int) -> dict:
@@ -211,24 +224,34 @@ async def update_invoice(
 
 @mcp.tool()
 async def get_purchases(
-    event_id: int,
+    event_id: Optional[int] = None,
     payment_status: Optional[str] = None,
     vendor_id: Optional[int] = None,
+    created_date_from: Optional[str] = None,
+    created_date_to: Optional[str] = None,
+    event_name: Optional[str] = None,
     page_number: int = 0,
     page_size: int = 50,
 ) -> dict:
     """
-    List purchase orders for a specific event. event_id is required.
+    List purchase orders. At least one filter is required by the Skybox API.
+    For aggregate purchase totals by date, use get_quick_report_purchases instead.
     Args:
-        event_id:       Skybox event ID (required)
-        payment_status: PAID or UNPAID
-        vendor_id:      Filter by vendor/supplier ID
+        event_id:          Skybox event ID
+        payment_status:    PAID or UNPAID
+        vendor_id:         Filter by vendor/supplier ID
+        created_date_from: Purchase created date start (YYYY-MM-DD)
+        created_date_to:   Purchase created date end (YYYY-MM-DD)
+        event_name:        Filter by event name (partial match)
     """
-    params = {"pageNumber": page_number, "pageSize": page_size, "eventId": event_id}
-    if payment_status: params["paymentStatus"] = payment_status
-    if vendor_id:      params["vendorId"]      = vendor_id
+    params = {"pageNumber": page_number, "pageSize": page_size}
+    if event_id:          params["eventId"]        = event_id
+    if payment_status:    params["paymentStatus"]  = payment_status
+    if vendor_id:         params["vendorId"]       = vendor_id
+    if created_date_from: params["createdDateFrom"] = created_date_from
+    if created_date_to:   params["createdDateTo"]  = created_date_to
+    if event_name:        params["eventName"]      = event_name
     return await _get("/purchases", params)
-
 @mcp.tool()
 async def get_purchase_by_id(purchase_id: int) -> dict:
     """Get full details for a single purchase order by its Skybox ID."""
@@ -340,25 +363,140 @@ async def get_sold_inventory(
     keywords: Optional[str] = None,
     event_id: Optional[int] = None,
     section: Optional[str] = None,
+    invoice_date_from: Optional[str] = None,
+    invoice_date_to: Optional[str] = None,
+    event_date_from: Optional[str] = None,
+    event_date_to: Optional[str] = None,
     page_number: int = 0,
     page_size: int = 50,
 ) -> dict:
     """
-    List SOLD inventory in Skybox. Use this for revenue analysis.
-    NOTE: The Skybox /reports endpoints are not exposed via the public REST API.
-    To calculate revenue for a date range, use get_events to find relevant events,
-    then get_invoices per event_id. Or use this tool to list sold inventory.
+    List sold inventory with line-item detail. At least one filter required.
+    For summary totals, use get_quick_report_sales instead.
     Args:
-        keywords:  Free-text search (event name, performer, venue)
-        event_id:  Filter by Skybox event ID
-        section:   Filter by section
+        keywords:          Free-text search
+        event_id:          Filter by Skybox event ID
+        section:           Filter by section
+        invoice_date_from: Invoice date range start (YYYY-MM-DD)
+        invoice_date_to:   Invoice date range end (YYYY-MM-DD)
+        event_date_from:   Event date range start (YYYY-MM-DD)
+        event_date_to:     Event date range end (YYYY-MM-DD)
     """
-    params = {"pageNumber": page_number, "pageSize": page_size, "status": "SOLD"}
-    if keywords:  params["keywords"] = keywords
-    if event_id:  params["eventId"]  = event_id
-    if section:   params["section"]  = section
-    return await _get("/inventory", params)
+    params = {"pageNumber": page_number, "pageSize": page_size}
+    if keywords:          params["eventKeywords"]    = keywords
+    if event_id:          params["eventId"]          = event_id
+    if section:           params["section"]          = section
+    if invoice_date_from: params["invoiceDateFrom"]  = invoice_date_from
+    if invoice_date_to:   params["invoiceDateTo"]    = invoice_date_to
+    if event_date_from:   params["eventDateFrom"]    = event_date_from
+    if event_date_to:     params["eventDateTo"]      = event_date_to
+    return await _get("/inventory/sold", params)
 
+@mcp.tool()
+async def get_purchased_inventory(
+    keywords: Optional[str] = None,
+    event_id: Optional[int] = None,
+    vendor_id: Optional[int] = None,
+    purchase_date_from: Optional[str] = None,
+    purchase_date_to: Optional[str] = None,
+    event_date_from: Optional[str] = None,
+    event_date_to: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    page_number: int = 0,
+    page_size: int = 50,
+) -> dict:
+    """
+    List purchased inventory with line-item detail. At least one filter required.
+    For summary totals, use get_quick_report_purchases instead.
+    Args:
+        keywords:           Free-text search (event name)
+        event_id:           Filter by Skybox event ID
+        vendor_id:          Filter by vendor ID
+        purchase_date_from: Purchase date range start (YYYY-MM-DD)
+        purchase_date_to:   Purchase date range end (YYYY-MM-DD)
+        event_date_from:    Event date range start (YYYY-MM-DD)
+        event_date_to:      Event date range end (YYYY-MM-DD)
+        payment_status:     PAID or UNPAID
+    """
+    params = {"pageNumber": page_number, "pageSize": page_size}
+    if keywords:            params["event"]             = keywords
+    if event_id:            params["eventId"]           = event_id
+    if vendor_id:           params["vendorId"]          = vendor_id
+    if purchase_date_from:  params["purchaseDateFrom"]  = purchase_date_from
+    if purchase_date_to:    params["purchaseDateTo"]    = purchase_date_to
+    if event_date_from:     params["eventDateFrom"]     = event_date_from
+    if event_date_to:       params["eventDateTo"]       = event_date_to
+    if payment_status:      params["paymentStatus"]     = payment_status
+    return await _get("/inventory/purchased", params)
+
+@mcp.tool()
+async def get_quick_report_sales(
+    invoice_date_from: Optional[str] = None,
+    invoice_date_to: Optional[str] = None,
+    event_date_from: Optional[str] = None,
+    event_date_to: Optional[str] = None,
+    event: Optional[str] = None,
+    venue: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    fulfillment_status: Optional[str] = None,
+) -> dict:
+    """
+    Get aggregate sales revenue summary for a date range. Returns totals for:
+    quantity, invoices, ticketCost, ticketSales, profit, profitPercentage, roi.
+    This is the best tool for 'how much revenue did I make today/this week'.
+    Args:
+        invoice_date_from:  Sale date range start (YYYY-MM-DD) - use for 'sales today'
+        invoice_date_to:    Sale date range end (YYYY-MM-DD)
+        event_date_from:    Event date range start (YYYY-MM-DD)
+        event_date_to:      Event date range end (YYYY-MM-DD)
+        event:              Filter by event name
+        venue:              Filter by venue name
+        payment_status:     Filter by payment status
+        fulfillment_status: Filter by fulfillment status
+    """
+    params = {}
+    if invoice_date_from:   params["invoiceDateFrom"]   = invoice_date_from
+    if invoice_date_to:     params["invoiceDateTo"]     = invoice_date_to
+    if event_date_from:     params["eventDateFrom"]     = event_date_from
+    if event_date_to:       params["eventDateTo"]       = event_date_to
+    if event:               params["event"]             = event
+    if venue:               params["venue"]             = venue
+    if payment_status:      params["paymentStatus"]     = payment_status
+    if fulfillment_status:  params["fulfillmentStatus"] = fulfillment_status
+    return await _get("/quick-report/sales", params)
+
+@mcp.tool()
+async def get_quick_report_purchases(
+    purchase_date_from: Optional[str] = None,
+    purchase_date_to: Optional[str] = None,
+    event_date_from: Optional[str] = None,
+    event_date_to: Optional[str] = None,
+    event: Optional[str] = None,
+    venue: Optional[str] = None,
+    payment_status: Optional[str] = None,
+) -> dict:
+    """
+    Get aggregate purchase cost summary for a date range. Returns totals for:
+    purchases, quantity, ticketCost, outstandingBalance, availableQuantity, soldQuantity.
+    This is the best tool for 'how much did I spend buying tickets this week'.
+    Args:
+        purchase_date_from: Purchase date range start (YYYY-MM-DD)
+        purchase_date_to:   Purchase date range end (YYYY-MM-DD)
+        event_date_from:    Event date range start (YYYY-MM-DD)
+        event_date_to:      Event date range end (YYYY-MM-DD)
+        event:              Filter by event name
+        venue:              Filter by venue name
+        payment_status:     Filter by payment status
+    """
+    params = {}
+    if purchase_date_from:  params["purchaseDateFrom"]  = purchase_date_from
+    if purchase_date_to:    params["purchaseDateTo"]    = purchase_date_to
+    if event_date_from:     params["eventDateFrom"]     = event_date_from
+    if event_date_to:       params["eventDateTo"]       = event_date_to
+    if event:               params["event"]             = event
+    if venue:               params["venue"]             = venue
+    if payment_status:      params["paymentStatus"]     = payment_status
+    return await _get("/quick-report/purchases", params)
 
 
 # -- ENTRYPOINT --------------------------------------------------------------
